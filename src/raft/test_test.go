@@ -285,6 +285,7 @@ func TestFailAgree2B(t *testing.T) {
 
 	// disconnect one follower from the network.
 	leader := cfg.checkOneLeader()
+	DPrintf("TestFailAgree2B leader is %d\n", leader)
 	cfg.disconnect((leader + 1) % servers)
 
 	// the leader and remaining follower should be
@@ -467,33 +468,43 @@ func TestRejoin2B(t *testing.T) {
 
 	cfg.begin("Test (2B): rejoin of partitioned leader")
 
+	DPrintf("TestRejoin2B: 选主\n")
 	cfg.one(101, servers, true)
+	DPrintf("TestRejoin2B: 添加一条日志\n")
 
 	// leader network failure
 	leader1 := cfg.checkOneLeader()
 	cfg.disconnect(leader1)
+	DPrintf("TestRejoin2B: 断联第一个leader\n")
 
 	// make old leader try to agree on some entries
 	cfg.rafts[leader1].Start(102)
 	cfg.rafts[leader1].Start(103)
 	cfg.rafts[leader1].Start(104)
+	DPrintf("TestRejoin2B: 为第一个leader添加三条日志\n")
 
 	// new leader commits, also for index=2
 	cfg.one(103, 2, true)
+	DPrintf("TestRejoin2B: 为第二个leader添加一条日志，在index = 2处\n")
 
 	// new leader network failure
 	leader2 := cfg.checkOneLeader()
 	cfg.disconnect(leader2)
+	DPrintf("TestRejoin2B: 断联第二个leader\n")
 
 	// old leader connected again
 	cfg.connect(leader1)
+	DPrintf("TestRejoin2B: 重连第一个leader\n")
 
 	cfg.one(104, 2, true)
+	DPrintf("TestRejoin2B: 添加一条日志\n")
 
 	// all together now
 	cfg.connect(leader2)
+	DPrintf("TestRejoin2B: 重联第二个leader\n")
 
 	cfg.one(105, servers, true)
+	DPrintf("TestRejoin2B: 添加一条日志\n")
 
 	cfg.end()
 }
