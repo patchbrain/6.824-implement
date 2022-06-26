@@ -13,6 +13,10 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term    int
 	Success bool // follower需拥有一条日志，该日志的任期和索引和PrevLogIndex、PrevLogTerm相等
+
+	IsConflicted  bool
+	ConflictIndex int
+	ConflictTerm  int
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -33,6 +37,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term > rf.currentTerm {
 		DPrintf("[%d] AppendEntries: 更新当前任期, 更新任期为: %d\n", rf.me, args.Term)
 		rf.updateTerm(args.Term)
+		rf.persist()
 		return
 	}
 
@@ -44,6 +49,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.PrevLogIndex > len(rf.log)-1 {
 		// 没找到
 		reply.Success = false
+		reply.IsConflicted = true
+		reply.ConflictIndex = len(rf.log)
+		reply.ConflictTerm = -1
 		DPrintf("[%d] AppendEntries: 未找到 PrevLogIndex 对应的日志", rf.me)
 		return
 	}
@@ -51,8 +59,19 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
 		DPrintf("[%d] AppendEntries: 未找到 PrevLogTerm 对应任期的日志", rf.me)
 		reply.Success = false
+		reply.IsConflicted = true
+		reply.ConflictTerm = rf.log[args.PrevLogIndex].Term
+		// 找任期==conflictTerm的第一个索引
+		for i := args.PrevLogIndex; i >= 0; i-- {
+			if reply.ConflictTerm != rf.log[i].Term {
+				reply.ConflictIndex = i + 1
+				break
+			}
+		}
+
 		if args.PrevLogIndex > 0 {
 			rf.log = rf.log[:args.PrevLogIndex]
+			rf.persist()
 		}
 		return
 	}
@@ -67,12 +86,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		if pos < len(rf.log) && args.Entries[i].Term != rf.log[pos].Term {
 			rf.log = rf.log[:pos]
+			rf.persist()
 			break
 		}
 		cnt++
 	}
 	for i := cnt; i < len(args.Entries); i++ {
 		rf.log = append(rf.log, args.Entries[i])
+		rf.persist()
 	}
 
 	//for i := args.PrevLogIndex + 1; i < len(rf.log); i++ {
@@ -96,6 +117,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.LeaderCommit > rf.commitIndex {
 		rf.commitIndex = Min(args.LeaderCommit, len(rf.log)-1)
 		rf.apply()
+		rf.persist()
 		DPrintf("[%d] AppendEntries: 更新本节点 commitIndex: %d\n", rf.me, rf.commitIndex)
 		DPrintf("[%d] AppendEntries: 当前日志: %+v\n", rf.me, rf.log)
 	}
@@ -186,6 +208,7 @@ func (rf *Raft) appendEntries(args AppendEntriesArgs, id int) {
 	if reply.Term > rf.currentTerm {
 		DPrintf("[%d] appendEntries: 发现节点 %d term 高，更新本节点状态，领导者让位\n", rf.me, id)
 		rf.updateTerm(reply.Term)
+		rf.persist()
 		return
 	}
 
@@ -193,12 +216,23 @@ func (rf *Raft) appendEntries(args AppendEntriesArgs, id int) {
 		return
 	}
 
-	if reply.Success == false {
-		DPrintf("[%d] appendEntries: 发现节点 %d 中对应 index 日志任期不同,或者无该 index 日志， 因此 index-1， index: %d\n", rf.me, id, rf.nextIndex[id])
-		if rf.nextIndex[id] > 1 {
-			rf.nextIndex[id]--
+	if reply.IsConflicted {
+		conflictTerm := reply.ConflictTerm
+		flag := false
+		for i := len(rf.log) - 1; i >= 0; i-- {
+			if conflictTerm == rf.log[i].Term {
+				rf.nextIndex[id] = i + 1
+				flag = true
+				break
+			}
 		}
-	} else {
+
+		if !flag {
+			rf.nextIndex[id] = reply.ConflictIndex
+		}
+
+		DPrintf("[%d] appendEntries: 发现节点 %d 中对应 index 冲突， 更新 nextIndex: %d\n", rf.me, id, rf.nextIndex[id])
+	} else if reply.Success {
 		DPrintf("[%d] appendEntries: 成功更新节点 %d 的日志: %d\n", rf.me, id, len(rf.log)-1)
 		match := args.PrevLogIndex + len(args.Entries)
 		rf.nextIndex[id] = match + 1
@@ -218,6 +252,7 @@ func (rf *Raft) appendEntries(args AppendEntriesArgs, id int) {
 				if cnt > len(rf.peers)/2 {
 					rf.commitIndex = i
 					rf.apply()
+					rf.persist()
 					DPrintf("[%d] appendEntries: 提交日志 %d \n", rf.me, len(rf.log)-1)
 					// 提前结束
 					break

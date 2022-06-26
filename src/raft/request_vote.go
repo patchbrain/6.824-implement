@@ -42,6 +42,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	} else if args.Term > rf.currentTerm {
 		DPrintf("[%d] RequestVote: 候选人任期较高，更新本节点term，候选者: %d\n", rf.me, args.CandidateId)
 		rf.updateTerm(args.Term)
+		rf.persist()
 	}
 
 	if rf.votedFor != -1 && rf.votedFor != args.CandidateId {
@@ -57,6 +58,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.resetElectionTime()
 		rf.rule = Follower
 		rf.votedFor = args.CandidateId
+		rf.persist()
 		reply.VoteGranted = true
 		return
 	} else {
@@ -105,6 +107,8 @@ func (rf *Raft) leaderElection() {
 	rf.currentTerm++
 	DPrintf("[%d] into leaderElection, 当前节点任期：%d\n", rf.me, rf.currentTerm)
 	rf.votedFor = rf.me
+	rf.persist()
+
 	voteCnt := 1
 
 	args := RequestVoteArgs{
@@ -132,6 +136,7 @@ func (rf *Raft) leaderElection() {
 				if reply.Term > rf.currentTerm {
 					DPrintf("[%d] leaderElection: 投票方 term 高，更新本节点状态，退出选举\n", rf.me)
 					rf.updateTerm(reply.Term)
+					rf.persist()
 					return
 				}
 

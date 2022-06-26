@@ -18,6 +18,8 @@ package raft
 //
 
 import (
+	"6.824/labgob"
+	"bytes"
 	"math/rand"
 	"time"
 
@@ -133,6 +135,25 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	var err error
+	if err = e.Encode(rf.currentTerm); err != nil {
+		DPrintf("[%d] persist: encode currentTerm 出错: %s\n", rf.me, err.Error())
+		return
+	}
+	if err = e.Encode(rf.votedFor); err != nil {
+		DPrintf("[%d] persist: encode votedFor 出错: %s\n", rf.me, err.Error())
+		return
+	}
+	if err = e.Encode(rf.log); err != nil {
+		DPrintf("[%d] persist: encode log 出错: %s\n", rf.me, err.Error())
+		return
+	}
+
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 //
@@ -155,6 +176,31 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+
+	var currentTerm, votedFor int
+	var log []LogEntry
+	var err error
+	if err = d.Decode(&currentTerm); err != nil {
+		DPrintf("[%d] readPersist: decode currentTerm 出错: %s\n", rf.me, err.Error())
+		return
+	}
+	if err = d.Decode(&votedFor); err != nil {
+		DPrintf("[%d] readPersist: decode votedFor 出错: %s\n", rf.me, err.Error())
+		return
+	}
+	if err = d.Decode(&log); err != nil {
+		DPrintf("[%d] readPersist: decode log 出错: %s\n", rf.me, err.Error())
+		return
+	}
+
+	rf.currentTerm = currentTerm
+	rf.votedFor = votedFor
+	tmpLogs := make([]LogEntry, len(log))
+	copy(tmpLogs, log)
+	rf.log = tmpLogs
 }
 
 //
@@ -215,6 +261,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 
 	rf.log = append(rf.log, log)
+	rf.persist()
 
 	rf.heartBeat()
 
@@ -331,7 +378,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 	rf.votedFor = -1
 	rf.leaderID = -1
-	rf.heartBeatTime = 100
+	rf.heartBeatTime = 50
 	rf.rule = Follower
 	rf.currentTerm = 0
 	rf.cond = sync.NewCond(&rf.mu)
@@ -347,7 +394,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		Command: nil,
 		Term:    0,
 	})
-
 	for _ = range peers {
 		rf.nextIndex = append(rf.nextIndex, 1)
 		rf.matchIndex = append(rf.matchIndex, 0)
@@ -357,6 +403,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.resetElectionTime()
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	if len(rf.log) > 1 {
+		for i := range rf.nextIndex {
+			rf.nextIndex[i] = len(rf.log)
+		}
+	}
+	//DPrintf("[%d] Make: 连接一个节点，经过 persist 后其日志为: %v\n", rf.me, rf.log)
+
 	rf.mu.Unlock()
 
 	// start ticker goroutine to start elections
